@@ -1,0 +1,665 @@
+                  Ansible/Nagios Core 4.4.6 (and Nagios NRPE agent) install/configure/deploy on CentOS8
+
+Purpose: Howto that combined howto steps from lots of other sources.
+
+Enviro:
+- NB master server: nb801d2c4u.lab.krt / 192.168.1.28, on RHEL7.x ...will be our Ansible server and Nagios monitoring server.
+- NB media server: nb801d2cmed / 192.168.1.26, on RHEL7.x; will be a remote server to-be-monitored
+- NB clients: nbclient1 / 192.168.1.33, on RHEL7.x; nbclient2 / 192.168.1.36, on Debian; will be a remote server to-be-monitored
+
+
+Apps:
+- Ansible. The config stuff is all in /etc/ansible after install.
+- Nagios:
+  - /etc/nagios or /usr/local/nagios/etc is config stuff for RHEL
+  - /usr/lib64/nagios or /usr/local/nagios is where all the executables and plugins live.
+
+
+
+On the server that will run 'Nagios server' (from which we will monitor remote servers):
+
+1. Install Ansible:
+yum --nogpgcheck install ansible
+
+2. Configure passwordless SSH to remote hosts to be monitored (execute these on monitoring svr):
+   a. generate a keygen:
+# ssh-keygen
+   
+   b. copy the id_rsa.pub to each remote system:
+# ssh-copy-id -i ~/.ssh/id_rsa.pub root@192.168.1.26
+   -or-
+# cat id_rsa.pub | ssh root@192.168.1.26 'cat >> .ssh/authorized_keys'
+
+   c. To ensure the 'ansible -ping' command works later, ssh connect to each remote host by ip and by hostname (both) and answer yes to
+the "Are you sure you want to continue connecting (yes/no/[fingerprint])?" question, ex.
+
+[root@tenbears ~]# ssh root@tbmaster
+The authenticity of host 'tbmaster (192.168.1.170)' can't be established.
+ECDSA key fingerprint is SHA256:pkHBjR4U8pHzRR3ksi063+hbweYw1xeYcAK7NPXcO1A.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added 'tbmaster' (ECDSA) to the list of known hosts.
+Activate the web console with: systemctl enable --now cockpit.socket
+
+Last login: Sat Mar 27 08:40:23 2021 from 192.168.1.122
+
+
+3. Configure SELINUX in 'permissive' mode:
+
+[root@tenbears ~]# cat /etc/selinux/config
+
+# This file controls the state of SELinux on the system.
+# SELINUX= can take one of these three values:
+#     enforcing - SELinux security policy is enforced.
+#     permissive - SELinux prints warnings instead of enforcing.
+#     disabled - No SELinux policy is loaded.
+SELINUX=enforcing
+# SELINUXTYPE= can take one of these three values:
+#     targeted - Targeted processes are protected,
+#     minimum - Modification of targeted policy. Only selected processes are protected.
+#     mls - Multi Level Security protection.
+SELINUXTYPE=targeted
+
+
+[root@tenbears ~]# sed -i 's/SELINUX=.*/SELINUX=permissive/g' /etc/selinux/config
+
+[root@tenbears ~]# cat /etc/selinux/config
+
+# This file controls the state of SELinux on the system.
+# SELINUX=permissive
+#     enforcing - SELinux security policy is enforced.
+#     permissive - SELinux prints warnings instead of enforcing.
+#     disabled - No SELinux policy is loaded.
+SELINUX=permissive
+# SELINUXTYPE= can take one of these three values:
+#     targeted - Targeted processes are protected,
+#     minimum - Modification of targeted policy. Only selected processes are protected.
+#     mls - Multi Level Security protection.
+SELINUXTYPE=targeted
+
+
+[root@tenbears ~]# setenforce 0
+
+[root@tenbears ~]# getenforce
+Permissive
+
+
+
+
+
+4. Install Nagios Core on CentOS8:
+   Credit to computingforgeeks.com for the install steps:
+    https://computingforgeeks.com/install-and-configure-nagios-4-on-rhel-centos-8/
+  ...here are the commands used on the CentOS8 system to be the Nagios monitoring server:
+
+- update the system first:
+dnf update
+
+- install some dependencies/prereqs:
+dnf install @php
+
+dnf install @perl @httpd wget unzip glibc automake glibc-common gettext autoconf php php-cli gcc gd gd-devel net-snmp openssl-devel unzip net-snmp postfix net-snmp-utils
+
+dnf groupinstall "Development Tools"
+
+- enable httpd and php-fpm to start at boot:
+systemctl enable --now httpd php-fpm
+
+- status httpd and php-fpm:
+systemctl status httpd php-fpm
+
+- set enviro variable to the latest Nagios version (at this writing 3/27/2021):
+export VER="4.4.6"
+
+- download Nagios Core:
+curl -SL https://github.com/NagiosEnterprises/nagioscore/releases/download/nagios-$VER/nagios-$VER.tar.gz | tar -xzf -
+
+- configure and install:
+cd nagios-$VER
+
+./configure
+
+make all
+
+make install-groups-users
+
+usermod -a -G nagios apache
+
+make install
+
+make install-daemoninit
+
+make install-commandmode
+
+make install-config
+
+make install-webconf
+
+make install-exfoliation
+
+make install-classicui
+
+- config Nagios UI user 'nagiosadmin' for web UI access:
+htpasswd -c /usr/local/nagios/etc/htpasswd.users nagiosadmin
+
+systemctl restart httpd
+
+
+
+5. install Nagios plugins:
+cd ~
+
+VER="2.3.3"
+
+curl -SL https://github.com/nagios-plugins/nagios-plugins/releases/download/release-$VER/nagios-plugins-$VER.tar.gz | tar -xzf -
+
+cd nagios-plugins-$VER
+
+./configure --with-nagios-user=nagios --with-nagios-group=nagios
+
+make
+
+make install
+
+/usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+
+systemctl enable --now nagios
+
+systemctl status nagios
+
+
+6. Nagios server install complete! Test login: http://<nagios_server_ip_address_here>/nagios/
+
+
+
+
+
+
+At this point our Nagios server is only monitoring itself. Next we'll use Ansible to push install Nagios Remote Plugin Executor (NRPE) and the nrpe.cfg config file to the remote Nagios clients to be monitored.
+
+
+1. On the Ansible/Nagios server, populate a Ansible 'hosts' file with a list of remote hosts. In this example nb801d2c4u.lab.krt is our local Nagios server and two RHEL7 hosts in a group called 'nbrhelhosts' and then a Debian sytem in 'nbdebianhosts' group:
+
+- 
+/etc/ansible/hosts contents:
+
+all:
+  hosts:
+    nb801d2c4u.lab.krt:
+  children:
+    nbrhelsvrs:
+      hosts:
+        nb801d2cmed.lab.krt:
+        nb811d2cmed.lab.krt:
+        nb812d2cmed.lab.krt:
+        nb812ad2cmed.lab.krt:
+        nb812bd2cmed.lab.krt:
+        nb812cd2cmed.lab.krt:
+    nbrhelclnts:
+      hosts:
+        nbclient1.lab.krt:
+    nbdebianhosts:
+      hosts:
+        nbclient2.lab.krt:
+
+Note: add more clients to your own 'hosts' configuration as needed.
+
+
+
+
+2. Test Ansible 'hosts' file and functionality/connectivity:
+# ansible all -m ping
+
+# ansible nbrhelsvrs -m ping
+
+
+
+
+Install/deploy the NRPE (Nagios Remote Plugin Executor) agent for client side monitoring.
+
+3. Next we create a Ansible playbook YAML file named nrpe-deploy.yaml to install NRPE, install Nagios plugins, and configure NRPE. 
+But we'll 'accidentally' forget the nrpe.cfg configuration file to demonstrate that we can update the same YAML playbook file later and
+re-execute it from the Ansible server and Ansible will re-execute the steps that are 'new' (as well as the original steps that may have 
+failed on certain remote hosts previously):
+
+   NOTE: With later versions of Nagios, the way to deploy the Linux NRPE Agent is per (until this changes again, this is what we'll follow):
+https://assets.nagios.com/downloads/nagiosxi/docs/Installing_The_XI_Linux_Agent.pdf
+
+So we'll create a nrpe-deploy.yaml w/following contents:
+
+---
+  - hosts: nbrhel8svrs
+    remote_user: root
+    #vars:
+      #backup_server: <server>
+
+    tasks:
+      - name: Download nrpe client
+        command: chdir=/tmp wget https://assets.nagios.com/downloads/nagiosxi/agents/linux-nrpe-agent.tar.gz
+        args:
+          warn: false
+
+      - name: Extract tarball
+        command: chdir=/tmp tar -xzf linux-nrpe-agent.tar.gz
+        args:
+          warn: false
+
+      - name: Install
+        command: chdir=/tmp/linux-nrpe-agent ./fullinstall -n -i 192.168.1.122
+
+
+  ....example execution:
+
+[root@tenbears ~]# ansible-playbook nrpe-deploy.yaml
+
+PLAY [nbrhel7svrs] ********************************************************************************************************************
+
+TASK [Gathering Facts] ****************************************************************************************************************
+ok: [nb82mstrprod]
+
+TASK [Download nrpe client] ***********************************************************************************************************
+changed: [nb82mstrprod]
+
+TASK [Extract tarball] ****************************************************************************************************************
+changed: [nb82mstrprod]
+
+TASK [Install] ************************************************************************************************************************
+changed: [nb82mstrprod]
+
+PLAY RECAP ****************************************************************************************************************************
+nb82mstrprod               : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+
+
+----    -----   -----   -----    -----
+
+
+
+
+Quick facts to get started w/post Nagios install configuration:
+
+- Nagios server /usr/local/nagios/etc/objects/commands.cfg must have this appended to monitor remote NRPE servers:
+
+	# .check_nrpe. command definition
+	define command{
+	command_name check_nrpe
+	command_line /usr/local/nagios/libexec/check_nrpe -H $HOSTADDRESS$ -t 30 -c $ARG1$
+	}
+	
+	....and I copied the check_nrpe binary from a remote NRPE agent host to the Nagios server to /usr/local/nagios/libexec/ and
+	ensure the binary has proper ownership (chown nagios.nagios /usr/local/nagios/libexec/check_nrpe)
+	   ...(I suspect I could have just installed the NRPE agent on the Nagios server but this simple trick worked)
+
+- Nagios server /usr/local/nagios/etc/servers/<hostname>.cfg (one per remote server) defines the host and services to monitor via
+commands executed. Command names must match the command names in the remote NRPE server to be monitored nrpe.cfg file command names.
+
+- NRPE remote server (to be monitored) /usr/local/nagios/etc/nrpe.cfg has the commands at bottom uncommented. The command names must
+match the Nagios server <hostname>.cfg command names.
+
+- To group the servers, in the Nagios server /usr/local/nagios/etc/nagios.cfg add/uncomment cfg_file=/usr/local/nagios/etc/objects/hostgroups.cfg line
+and create a /usr/local/nagios/etc/objects/hostgroups.cfg file w/content inside for example:
+
+		define hostgroup {
+	     hostgroup_name  web_servers
+		 alias           Web Servers
+		}
+
+   ...then in each of the Nagios server /usr/local/nagios/etc/servers/<hostname>.cfg files for the web servers, within the 'define host {' section add:
+      
+	        hostgroups              web_servers
+
+
+- After changes to any config files on the Nagios server, always:  
+  - test configuration via: /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+  - reload Nagios via: systemctl reload nagios
+
+- On remote NRPE to-be-monitored hosts, the /etc/xinetd.d/nrpe is what contains the 'only_from' pointing to the Nagios server IP.
+
+
+
+
+Deploy updated nrpe.cfg to the remote NRPE agent hosts with Ansible:
+
+  Now on the Ansible server, we will create a nrpe.cfg file for the remote Nagios clients, update the Ansible server-side nrpe-deploy.yaml file
+and deploy (or re-deploy if changes are needed):
+
+1. first create the file nrpe.cfg on the ansible server with contents:
+
+ -------->start nrpe.cfg file contents<----------
+# bind to all interfaces
+server_address=0.0.0.0
+
+# allow access by localhost (only need to add the Nagios server if not using xinetd):
+allowed_hosts=127.0.0.1
+
+# allow command args
+dont_blame_nrpe=1
+
+# example monitor commands
+command[check_users]=/usr/lib64/nagios/plugins/check_users -w 5 -c 10
+command[check_load]=/usr/lib64/nagios/plugins/check_load -r -w .15,.10,.05 -c .30,.25,.20
+#command[check_hda1]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /dev/hda1
+command[check_root]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /dev/mapper/rhel-root
+command[check_nbvol]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /dev/nbu/nbvol
+command[check_advdsk]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /dev/mapper/nbu-advdsk
+command[check_msdp]=/usr/lib64/nagios/plugins/check_disk -w 20% -c 10% -p /dev/mapper/nbu-msdpcache
+command[check_zombie_procs]=/usr/lib64/nagios/plugins/check_procs -w 5 -c 10 -s Z
+command[check_total_procs]=/usr/lib64/nagios/plugins/check_procs -w 150 -c 200
+
+ -------->end nrpe.cfg file contents<----------
+
+
+2. Next, append following lines to the nrpe-deploy.yaml file:
+
+  - name: deploy nrpe.cfg
+    copy:
+      src: nrpe.cfg
+      dest: /usr/local/nagios/etc/nrpe.cfg
+      force: yes
+      backup: yes
+    register: deploy_nrpe
+
+
+
+3. From the Ansible server, redeploy (and whats cool is before running this I fixed a broken yum installer on nb812cd2cmed.lab.krt so this 
+re-execution successfully completed the NRPE and Nagios plugin installs on nb812cd2cmed.lab.krt, then deployed the nrpe.cfg file):
+
+[root@nb801d2c4u ansible]# ansible-playbook nrpe-deploy.yaml
+
+PLAY [nbrhelhosts] *******************************************************************************************************
+
+TASK [Gathering Facts] ***************************************************************************************************
+ok: [nbclient1.lab.krt]
+ok: [nb812bd2cmed.lab.krt]
+ok: [nb812ad2cmed.lab.krt]
+ok: [nb811d2cmed.lab.krt]
+ok: [nb801d2cmed.lab.krt]
+
+TASK [install epel] ******************************************************************************************************
+ok: [nb801d2cmed.lab.krt]
+ok: [nb812bd2cmed.lab.krt]
+ok: [nb812ad2cmed.lab.krt]
+ok: [nb811d2cmed.lab.krt]
+changed: [nb812cd2cmed.lab.krt]
+
+TASK [install nrpe] ******************************************************************************************************
+ok: [nb801d2cmed.lab.krt]
+ok: [nb812bd2cmed.lab.krt]
+ok: [nb812ad2cmed.lab.krt]
+ok: [nb811d2cmed.lab.krt]
+changed: [nb812cd2cmed.lab.krt]
+
+TASK [install nagios plugins] ********************************************************************************************
+ok: [nb801d2cmed.lab.krt]
+ok: [nb812bd2cmed.lab.krt]
+ok: [nb812ad2cmed.lab.krt]
+ok: [nb811d2cmed.lab.krt]
+changed: [nb812cd2cmed.lab.krt]
+
+TASK [deploy nrpe.cfg] ***************************************************************************************************
+changed: [nb812cd2cmed.lab.krt]
+changed: [nb812bd2cmed.lab.krt]
+changed: [nb812ad2cmed.lab.krt]
+changed: [nb811d2cmed.lab.krt]
+changed: [nb801d2cmed.lab.krt]
+changed: [nb801d2cmed.lab.krt]
+
+TASK [start/restart and enable nrpe] *************************************************************************************
+changed: [nb812cd2cmed.lab.krt]
+changed: [nb812bd2cmed.lab.krt]
+changed: [nb812ad2cmed.lab.krt]
+changed: [nb811d2cmed.lab.krt]
+changed: [nb801d2cmed.lab.krt]
+changed: [nb801d2cmed.lab.krt]
+
+PLAY RECAP ***************************************************************************************************************
+nb801d2cmed.lab.krt        : ok=6    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb801d2cmed.lab.krt        : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb801d2cmed.lab.krt        : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb811d2cmed.lab.krt        : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb812ad2cmed.lab.krt       : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb812cd2cmed.lab.krt       : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+nb812cd2cmed.lab.krt       : ok=6    changed=5    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+[root@nb801d2c4u ansible]#
+
+
+
+4. On the Nagios Server, append following to bottom of /etc/nagios/objects/commands.cfg:
+
+# .check_nrpe. command definition
+define command{
+command_name check_nrpe
+command_line /usr/lib64/nagios/plugins/check_nrpe -H $HOSTADDRESS$ -t 30 -c $ARG1$
+}
+
+
+5. On the Nagios Server, create <hostname>.cfg files inside /usr/local/nagios/etc/servers/ for each host to be monitored. In this example
+we created one for one of the remote NB media servers:
+
+# vi nb801d2cmed.cfg      
+   .....add following content:
+
+###############################################################################
+#
+# HOST DEFINITION
+#
+###############################################################################
+
+# Define a host for the local machine
+
+define host {
+
+    use                     linux-server            ; Name of host template to use
+                                                    ; This host definition will inherit all variables that are defined
+                                                    ; in (or inherited by) the linux-server host template definition.
+	hostgroups              NB_servers												
+    host_name               nb801d2cmed
+    alias                   nb801d2cmed
+    address                 192.168.1.26
+    register                1
+}
+
+
+
+###############################################################################
+#
+# SERVICE DEFINITIONS
+#
+###############################################################################
+
+# Define a service to "ping"
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     PING
+    check_command           check_ping!100.0,20%!500.0,60%
+}
+
+
+
+# Define a service to check the disk space of the root partition
+# on the local machine.  Warning if < 20% free, critical if
+# < 10% free space on partition.
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Root Partition
+    check_command           check_nrpe!check_root
+}
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     NB Partition
+    check_command           check_nrpe!check_nbvol
+}
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Advanced Disk Partition
+    check_command           check_nrpe!check_advdsk
+}
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     MSDP
+    check_command           check_nrpe!check_msdp
+}
+
+
+
+
+# Define a service to check the number of currently logged in
+# users on the local machine.  Warning if > 20 users, critical
+# if > 50 users.
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Current Users
+    check_command           check_local_users!20!50
+}
+
+
+
+# Define a service to check the number of currently running procs
+# on the local machine.  Warning if > 250 processes, critical if
+# > 400 processes.
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Total Processes
+    check_command           check_local_procs!250!400!RSZDT
+}
+
+
+
+# Define a service to check the load on the local machine.
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Current Load
+    check_command           check_local_load!5.0,4.0,3.0!10.0,6.0,4.0
+}
+
+
+
+# Define a service to check the swap usage the local machine.
+# Critical if less than 10% of swap is free, warning if less than 20% is free
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     Swap Usage
+    check_command           check_local_swap!20%!10%
+}
+
+
+
+# Define a service to check SSH on the local machine.
+# Disable notifications for this service by default, as not all users may have SSH enabled.
+
+define service {
+
+    use                     generic-service           ; Name of service template to use
+    host_name               nb801d2cmed
+    service_description     SSH
+    check_command           check_ssh
+    notifications_enabled   0
+}
+
+
+.....save the /etc/nagios/servers/nb801d2cmed.cfg file and the others you create.
+
+
+6. (Required only if we didn't use Ansible to push out a custom nrpe.cfg file to the NRPE agent) On the remote NRPE agent append following
+commands to the /usr/local/nagios/etc/nrpe.cfg:
+
+command[check_users]=/usr/local/nagios/libexec/check_users -w 5 -c 10
+command[check_load]=/usr/local/nagios/libexec/check_load -r -w .15,.10,.05 -c .30,.25,.20
+command[check_root]=/usr/local/nagios/libexec/check_disk -w 20% -c 10% -p /dev/mapper/cl-root
+command[check_nbvol]=/usr/local/nagios/libexec/check_disk -w 20% -c 10% -p /dev/mapper/nbuvg-nbvol
+command[check_advdsk]=/usr/local/nagios/libexec/check_disk -w 20% -c 10% -p /dev/mapper/nbuvg-advdskvol
+command[check_cc_cache]=/usr/local/nagios/libexec/check_disk -w 20% -c 10% -p /dev/mapper/nbuvg-d2cvol
+command[check_zombie_procs]=/usr/local/nagios/libexec/check_procs -w 5 -c 10 -s Z
+command[check_total_procs]=/usr/local/nagios/libexec/check_procs -w 150 -c 200
+
+
+7. confirm Nagios config:
+
+# /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+
+Nagios Core 4.4.6
+Copyright (c) 2009-present Nagios Core Development Team and Community Contributors
+Copyright (c) 1999-2009 Ethan Galstad
+Last Modified: 2020-04-28
+License: GPL
+
+Website: https://www.nagios.org
+Reading configuration data...
+   Read main config file okay...
+   Read object config files okay...
+
+Running pre-flight check on configuration data...
+
+Checking objects...
+        Checked 8 services.
+        Checked 1 hosts.
+        Checked 1 host groups.
+        Checked 0 service groups.
+        Checked 1 contacts.
+        Checked 1 contact groups.
+        Checked 24 commands.
+        Checked 5 time periods.
+        Checked 0 host escalations.
+        Checked 0 service escalations.
+Checking for circular paths...
+        Checked 1 hosts
+        Checked 0 service dependencies
+        Checked 0 host dependencies
+        Checked 5 timeperiods
+Checking global event handlers...
+Checking obsessive compulsive processor commands...
+Checking misc settings...
+
+Total Warnings: 0
+Total Errors:   0
+
+Things look okay - No serious problems were detected during the pre-flight check
+[root@nb801d2c4u ~]#
+
+
+
+
+References:
+
+Install and Configure Nagios 4 on RHEL 8 / CentOS 8 | ComputingForGeeks
+https://computingforgeeks.com/install-and-configure-nagios-4-on-rhel-centos-8/
+
+Creating a new hostgroup - Nagios Core Administration Cookbook - Second Edition
+https://subscription.packtpub.com/book/networking_and_servers/9781785889332/1/ch01lvl1sec14/creating-a-new-hostgroup
+
+Nagios XI - Installing The Linux Agent - Installing_The_XI_Linux_Agent.pdf
+https://assets.nagios.com/downloads/nagiosxi/docs/Installing_The_XI_Linux_Agent.pdf
+
+How to install the NRPE agent/daemon on CentOS 8 – Support - ITRS Group
+https://support.itrsgroup.com/hc/en-us/articles/360007433518-How-to-install-the-NRPE-agent-daemon-on-CentOS-8
+
+Time-Saving Tricks For Object Definitions
+https://assets.nagios.com/downloads/nagioscore/docs/nagioscore/3/en/objecttricks.html
