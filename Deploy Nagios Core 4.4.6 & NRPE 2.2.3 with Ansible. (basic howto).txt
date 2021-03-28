@@ -646,6 +646,13 @@ Things look okay - No serious problems were detected during the pre-flight check
 
 
 
+Optional but recommended...re-configure SELINUX in 'Enforcing' mode:
+# sed -i 's/SELINUX=.*/SELINUX=enforcing/g' /etc/selinux/config
+
+# setenforce 1
+
+
+
 
 References:
 
